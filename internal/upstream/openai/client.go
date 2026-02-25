@@ -101,7 +101,7 @@ func RequestAPIKeyFromContext(ctx context.Context) string {
 func (c *Client) Transcribe(ctx context.Context, file io.Reader, fileName, model string) (string, error) {
 	started := time.Now()
 	statusCode := 0
-	defer c.observe("audio_transcriptions", statusCode, time.Since(started))
+	defer func() { c.observe("audio_transcriptions", statusCode, time.Since(started)) }()
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -152,7 +152,7 @@ func (c *Client) Transcribe(ctx context.Context, file io.Reader, fileName, model
 func (c *Client) ChatCompletion(ctx context.Context, reqPayload ChatCompletionRequest) (ChatCompletionResponse, error) {
 	started := time.Now()
 	statusCode := 0
-	defer c.observe("chat_completions", statusCode, time.Since(started))
+	defer func() { c.observe("chat_completions", statusCode, time.Since(started)) }()
 
 	payload, err := json.Marshal(reqPayload)
 	if err != nil {
@@ -191,7 +191,7 @@ func (c *Client) ChatCompletion(ctx context.Context, reqPayload ChatCompletionRe
 func (c *Client) CheckModels(ctx context.Context) error {
 	started := time.Now()
 	statusCode := 0
-	defer c.observe("models", statusCode, time.Since(started))
+	defer func() { c.observe("models", statusCode, time.Since(started)) }()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
 	if err != nil {
