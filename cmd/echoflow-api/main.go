@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,7 @@ import (
 
 	"echoflow/internal/config"
 	"echoflow/internal/httpapi"
+	"echoflow/internal/observability"
 	"echoflow/internal/pipeline"
 	"echoflow/internal/postprocess"
 	"echoflow/internal/transcription"
@@ -27,19 +29,32 @@ func main() {
 	}
 
 	logger := newLogger(cfg.LogLevel)
+	metrics := observability.NewMetrics()
 
-	upstreamHTTPClient := &http.Client{Timeout: cfg.RequestTimeout}
-	upstreamClient := openai.New(cfg.UpstreamBaseURL, cfg.UpstreamAPIKey, upstreamHTTPClient)
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	upstreamHTTPClient := &http.Client{Timeout: cfg.RequestTimeout, Transport: transport}
+	upstreamClient := openai.New(cfg.UpstreamBaseURL, cfg.UpstreamAPIKey, upstreamHTTPClient, openai.WithObserver(metrics.ObserveUpstream))
 
 	transcriptionService := transcription.New(upstreamClient, cfg.TranscriptionModel, cfg.TranscriptionTimeout)
 	postProcessService := postprocess.New(upstreamClient, cfg.PostProcessModel, cfg.PostProcessTimeout)
 	pipelineService := pipeline.New(transcriptionService, postProcessService, cfg.TranscriptionModel, cfg.PostProcessModel)
 
 	handler := httpapi.NewServer(cfg, logger, httpapi.Dependencies{
-		Transcription: transcriptionService,
-		PostProcess:   postProcessService,
-		Pipeline:      pipelineService,
-		Upstream:      upstreamClient,
+		Transcription:  transcriptionService,
+		PostProcess:    postProcessService,
+		Pipeline:       pipelineService,
+		Upstream:       upstreamClient,
+		Metrics:        metrics,
+		MetricsHandler: metrics.Handler(),
 	})
 
 	srv := &http.Server{

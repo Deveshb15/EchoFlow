@@ -2,11 +2,10 @@ package config
 
 import (
 	"errors"
-	"fmt"
-	"os"
-	"strconv"
 	"strings"
 	"time"
+
+	cenv "github.com/caarlos0/env/v11"
 )
 
 type Config struct {
@@ -24,33 +23,41 @@ type Config struct {
 	LogLevel             string
 }
 
+type envConfig struct {
+	ListenAddr                  string `env:"LISTEN_ADDR" envDefault:":8080"`
+	UpstreamBaseURL             string `env:"UPSTREAM_BASE_URL" envDefault:"https://api.groq.com/openai/v1"`
+	UpstreamAPIKey              string `env:"UPSTREAM_API_KEY"`
+	TranscriptionModel          string `env:"TRANSCRIPTION_MODEL" envDefault:"whisper-large-v3"`
+	PostProcessModel            string `env:"POSTPROCESS_MODEL" envDefault:"meta-llama/llama-4-scout-17b-16e-instruct"`
+	RequestTimeoutSeconds       int    `env:"REQUEST_TIMEOUT_SECONDS" envDefault:"25"`
+	TranscriptionTimeoutSeconds int    `env:"TRANSCRIPTION_TIMEOUT_SECONDS" envDefault:"20"`
+	PostProcessTimeoutSeconds   int    `env:"POSTPROCESS_TIMEOUT_SECONDS" envDefault:"20"`
+	MaxUploadBytes              int64  `env:"MAX_UPLOAD_BYTES" envDefault:"26214400"`
+	EnableAuth                  bool   `env:"ENABLE_AUTH" envDefault:"false"`
+	APIBearerToken              string `env:"API_BEARER_TOKEN"`
+	LogLevel                    string `env:"LOG_LEVEL" envDefault:"info"`
+}
+
 func Load() (Config, error) {
-	cfg := Config{
-		ListenAddr:         envOrDefault("LISTEN_ADDR", ":8080"),
-		UpstreamBaseURL:    strings.TrimRight(envOrDefault("UPSTREAM_BASE_URL", "https://api.groq.com/openai/v1"), "/"),
-		UpstreamAPIKey:     strings.TrimSpace(os.Getenv("UPSTREAM_API_KEY")),
-		TranscriptionModel: envOrDefault("TRANSCRIPTION_MODEL", "whisper-large-v3"),
-		PostProcessModel:   envOrDefault("POSTPROCESS_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
-		LogLevel:           strings.ToLower(envOrDefault("LOG_LEVEL", "info")),
+	var raw envConfig
+	if err := cenv.Parse(&raw); err != nil {
+		return Config{}, err
 	}
 
-	var err error
-	if cfg.RequestTimeout, err = secondsEnv("REQUEST_TIMEOUT_SECONDS", 25); err != nil {
-		return Config{}, err
+	cfg := Config{
+		ListenAddr:           strings.TrimSpace(raw.ListenAddr),
+		UpstreamBaseURL:      strings.TrimRight(strings.TrimSpace(raw.UpstreamBaseURL), "/"),
+		UpstreamAPIKey:       strings.TrimSpace(raw.UpstreamAPIKey),
+		TranscriptionModel:   strings.TrimSpace(raw.TranscriptionModel),
+		PostProcessModel:     strings.TrimSpace(raw.PostProcessModel),
+		RequestTimeout:       time.Duration(raw.RequestTimeoutSeconds) * time.Second,
+		TranscriptionTimeout: time.Duration(raw.TranscriptionTimeoutSeconds) * time.Second,
+		PostProcessTimeout:   time.Duration(raw.PostProcessTimeoutSeconds) * time.Second,
+		MaxUploadBytes:       raw.MaxUploadBytes,
+		EnableAuth:           raw.EnableAuth,
+		APIBearerToken:       strings.TrimSpace(raw.APIBearerToken),
+		LogLevel:             strings.ToLower(strings.TrimSpace(raw.LogLevel)),
 	}
-	if cfg.TranscriptionTimeout, err = secondsEnv("TRANSCRIPTION_TIMEOUT_SECONDS", 20); err != nil {
-		return Config{}, err
-	}
-	if cfg.PostProcessTimeout, err = secondsEnv("POSTPROCESS_TIMEOUT_SECONDS", 20); err != nil {
-		return Config{}, err
-	}
-	if cfg.MaxUploadBytes, err = int64Env("MAX_UPLOAD_BYTES", 25*1024*1024); err != nil {
-		return Config{}, err
-	}
-	if cfg.EnableAuth, err = boolEnv("ENABLE_AUTH", false); err != nil {
-		return Config{}, err
-	}
-	cfg.APIBearerToken = strings.TrimSpace(os.Getenv("API_BEARER_TOKEN"))
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -74,6 +81,15 @@ func (c Config) Validate() error {
 	if c.PostProcessModel == "" {
 		return errors.New("POSTPROCESS_MODEL must not be empty")
 	}
+	if c.RequestTimeout <= 0 {
+		return errors.New("REQUEST_TIMEOUT_SECONDS must be > 0")
+	}
+	if c.TranscriptionTimeout <= 0 {
+		return errors.New("TRANSCRIPTION_TIMEOUT_SECONDS must be > 0")
+	}
+	if c.PostProcessTimeout <= 0 {
+		return errors.New("POSTPROCESS_TIMEOUT_SECONDS must be > 0")
+	}
 	if c.MaxUploadBytes <= 0 {
 		return errors.New("MAX_UPLOAD_BYTES must be > 0")
 	}
@@ -81,54 +97,4 @@ func (c Config) Validate() error {
 		return errors.New("API_BEARER_TOKEN is required when ENABLE_AUTH=true")
 	}
 	return nil
-}
-
-func envOrDefault(key, fallback string) string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func secondsEnv(key string, fallback int) (time.Duration, error) {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return time.Duration(fallback) * time.Second, nil
-	}
-	seconds, err := strconv.Atoi(value)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
-	}
-	if seconds <= 0 {
-		return 0, fmt.Errorf("%s must be > 0", key)
-	}
-	return time.Duration(seconds) * time.Second, nil
-}
-
-func int64Env(key string, fallback int64) (int64, error) {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback, nil
-	}
-	n, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
-	}
-	if n <= 0 {
-		return 0, fmt.Errorf("%s must be > 0", key)
-	}
-	return n, nil
-}
-
-func boolEnv(key string, fallback bool) (bool, error) {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback, nil
-	}
-	b, err := strconv.ParseBool(value)
-	if err != nil {
-		return false, fmt.Errorf("%s must be a bool: %w", key, err)
-	}
-	return b, nil
 }

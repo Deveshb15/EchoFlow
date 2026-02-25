@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,9 @@ import (
 	"echoflow/internal/pipeline"
 	"echoflow/internal/postprocess"
 	"echoflow/internal/upstream/openai"
+
+	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 )
 
 type TranscriptionService interface {
@@ -38,20 +42,29 @@ type UpstreamChecker interface {
 	CheckModels(ctx context.Context) error
 }
 
+type MetricsObserver interface {
+	ObserveHTTP(route, method string, status int, duration time.Duration)
+	IncPipelineFallback()
+}
+
 type Dependencies struct {
-	Transcription TranscriptionService
-	PostProcess   PostProcessService
-	Pipeline      PipelineService
-	Upstream      UpstreamChecker
+	Transcription  TranscriptionService
+	PostProcess    PostProcessService
+	Pipeline       PipelineService
+	Upstream       UpstreamChecker
+	Metrics        MetricsObserver
+	MetricsHandler http.Handler
 }
 
 type server struct {
-	cfg         config.Config
-	logger      *slog.Logger
-	transcriber TranscriptionService
-	postProcess PostProcessService
-	pipeline    PipelineService
-	upstream    UpstreamChecker
+	cfg          config.Config
+	logger       *slog.Logger
+	transcriber  TranscriptionService
+	postProcess  PostProcessService
+	pipeline     PipelineService
+	upstream     UpstreamChecker
+	metrics      MetricsObserver
+	metricsRoute http.Handler
 }
 
 type ctxKey string
@@ -71,41 +84,49 @@ func NewServer(cfg config.Config, logger *slog.Logger, deps Dependencies) http.H
 	}
 
 	s := &server{
-		cfg:         cfg,
-		logger:      logger,
-		transcriber: deps.Transcription,
-		postProcess: deps.PostProcess,
-		pipeline:    deps.Pipeline,
-		upstream:    deps.Upstream,
+		cfg:          cfg,
+		logger:       logger,
+		transcriber:  deps.Transcription,
+		postProcess:  deps.PostProcess,
+		pipeline:     deps.Pipeline,
+		upstream:     deps.Upstream,
+		metrics:      deps.Metrics,
+		metricsRoute: deps.MetricsHandler,
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/readyz", s.handleReadyz)
-	mux.HandleFunc("/v1/transcriptions", s.handleTranscriptions)
-	mux.HandleFunc("/v1/post-process", s.handlePostProcess)
-	mux.HandleFunc("/v1/pipeline/process", s.handlePipelineProcess)
+	r := chi.NewRouter()
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		s.writeError(w, r, http.StatusNotFound, "not_found", "route not found", nil)
+	})
+	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+		s.writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
+	})
 
-	var handler http.Handler = mux
-	handler = s.authMiddleware(handler)
-	handler = s.recoverMiddleware(handler)
-	handler = s.loggingMiddleware(handler)
-	handler = s.requestIDMiddleware(handler)
-	return handler
+	r.Use(s.requestIDMiddleware)
+	r.Use(s.loggingMiddleware)
+	r.Use(s.recoverMiddleware)
+	r.Use(s.authMiddleware)
+
+	r.Get("/healthz", s.handleHealthz)
+	r.Get("/readyz", s.handleReadyz)
+	if s.metricsRoute != nil {
+		r.Handle("/metrics", s.metricsRoute)
+	}
+
+	r.Route("/v1", func(r chi.Router) {
+		r.Post("/transcriptions", s.handleTranscriptions)
+		r.Post("/post-process", s.handlePostProcess)
+		r.Post("/pipeline/process", s.handlePipelineProcess)
+	})
+
+	return r
 }
 
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(s, w, r, http.MethodGet) {
-		return
-	}
 	writeJSON(w, http.StatusOK, model.HealthResponse{OK: true})
 }
 
 func (s *server) handleReadyz(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(s, w, r, http.MethodGet) {
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := s.upstream.CheckModels(ctx); err != nil {
@@ -116,10 +137,6 @@ func (s *server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(s, w, r, http.MethodPost) {
-		return
-	}
-
 	file, header, form, err := s.readMultipartAudio(w, r)
 	if err != nil {
 		s.handleMultipartReadError(w, r, err)
@@ -138,10 +155,6 @@ func (s *server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handlePostProcess(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(s, w, r, http.MethodPost) {
-		return
-	}
-
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	defer r.Body.Close()
 
@@ -182,10 +195,6 @@ func (s *server) handlePostProcess(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handlePipelineProcess(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(s, w, r, http.MethodPost) {
-		return
-	}
-
 	file, header, form, err := s.readMultipartAudio(w, r)
 	if err != nil {
 		s.handleMultipartReadError(w, r, err)
@@ -213,6 +222,9 @@ func (s *server) handlePipelineProcess(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeMappedError(w, r, err)
 		return
+	}
+	if s.metrics != nil && result.PostProcessingStatus == "Post-processing failed, using raw transcript" {
+		s.metrics.IncPipelineFallback()
 	}
 
 	writeJSON(w, http.StatusOK, model.PipelineProcessResponse{
@@ -284,16 +296,6 @@ func (s *server) writeMappedError(w http.ResponseWriter, r *http.Request, err er
 		message = "request canceled"
 	}
 
-	if status == 499 {
-		// Non-standard, but useful; if you prefer strict HTTP semantics change to 408.
-		w.WriteHeader(499)
-		_ = json.NewEncoder(w).Encode(model.ErrorResponse{
-			Error:     model.APIError{Code: code, Message: message, Details: details},
-			RequestID: requestIDFromContext(r.Context()),
-		})
-		return
-	}
-
 	s.writeError(w, r, status, code, message, details)
 }
 
@@ -322,15 +324,34 @@ func (s *server) requestIDMiddleware(next http.Handler) http.Handler {
 func (s *server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
+		ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+
+		status := ww.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+
+		route := r.URL.Path
+		if rctx := chi.RouteContext(r.Context()); rctx != nil {
+			if pattern := rctx.RoutePattern(); pattern != "" {
+				route = pattern
+			}
+		}
+
+		duration := time.Since(started)
+		if s.metrics != nil {
+			s.metrics.ObserveHTTP(route, r.Method, status, duration)
+		}
+
 		s.logger.Info("http_request",
 			"request_id", requestIDFromContext(r.Context()),
 			"method", r.Method,
+			"route", route,
 			"path", r.URL.Path,
-			"status", rec.status,
-			"bytes", rec.bytes,
-			"duration_ms", time.Since(started).Milliseconds(),
+			"status", status,
+			"bytes", ww.BytesWritten(),
+			"duration_ms", duration.Milliseconds(),
 		)
 	})
 }
@@ -352,9 +373,19 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isPublicPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		const prefix = "Bearer "
 		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-		expected := "Bearer " + s.cfg.APIBearerToken
-		if authHeader != expected {
+		if !strings.HasPrefix(authHeader, prefix) {
+			s.writeError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token", nil)
+			return
+		}
+		token := strings.TrimSpace(strings.TrimPrefix(authHeader, prefix))
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.APIBearerToken)) != 1 {
 			s.writeError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token", nil)
 			return
 		}
@@ -362,17 +393,18 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func requireMethod(s *server, w http.ResponseWriter, r *http.Request, method string) bool {
-	if r.Method == method {
+func isPublicPath(path string) bool {
+	switch path {
+	case "/healthz", "/readyz", "/metrics":
 		return true
+	default:
+		return false
 	}
-	w.Header().Set("Allow", method)
-	s.writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
-	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
@@ -446,21 +478,4 @@ func minInt64(a, b int64) int64 {
 		return a
 	}
 	return b
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-	bytes  int
-}
-
-func (r *statusRecorder) WriteHeader(statusCode int) {
-	r.status = statusCode
-	r.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (r *statusRecorder) Write(p []byte) (int, error) {
-	n, err := r.ResponseWriter.Write(p)
-	r.bytes += n
-	return n, err
 }

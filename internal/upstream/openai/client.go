@@ -9,12 +9,18 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"time"
 )
+
+type ObserverFunc func(endpoint string, status int, duration time.Duration)
+
+type Option func(*Client)
 
 type Client struct {
 	baseURL    string
 	apiKey     string
 	httpClient *http.Client
+	observer   ObserverFunc
 }
 
 type Error struct {
@@ -48,18 +54,34 @@ type ChatCompletionResponse struct {
 	Usage   *TokenUsage
 }
 
-func New(baseURL, apiKey string, httpClient *http.Client) *Client {
+func WithObserver(observer ObserverFunc) Option {
+	return func(c *Client) {
+		c.observer = observer
+	}
+}
+
+func New(baseURL, apiKey string, httpClient *http.Client, opts ...Option) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &Client{
+	c := &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		apiKey:     strings.TrimSpace(apiKey),
 		httpClient: httpClient,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+	return c
 }
 
 func (c *Client) Transcribe(ctx context.Context, file io.Reader, fileName, model string) (string, error) {
+	started := time.Now()
+	statusCode := 0
+	defer c.observe("audio_transcriptions", statusCode, time.Since(started))
+
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
@@ -90,6 +112,7 @@ func (c *Client) Transcribe(ctx context.Context, file io.Reader, fileName, model
 		return "", err
 	}
 	defer resp.Body.Close()
+	statusCode = resp.StatusCode
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -104,6 +127,10 @@ func (c *Client) Transcribe(ctx context.Context, file io.Reader, fileName, model
 }
 
 func (c *Client) ChatCompletion(ctx context.Context, reqPayload ChatCompletionRequest) (ChatCompletionResponse, error) {
+	started := time.Now()
+	statusCode := 0
+	defer c.observe("chat_completions", statusCode, time.Since(started))
+
 	payload, err := json.Marshal(reqPayload)
 	if err != nil {
 		return ChatCompletionResponse{}, err
@@ -122,6 +149,7 @@ func (c *Client) ChatCompletion(ctx context.Context, reqPayload ChatCompletionRe
 		return ChatCompletionResponse{}, err
 	}
 	defer resp.Body.Close()
+	statusCode = resp.StatusCode
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -136,6 +164,10 @@ func (c *Client) ChatCompletion(ctx context.Context, reqPayload ChatCompletionRe
 }
 
 func (c *Client) CheckModels(ctx context.Context) error {
+	started := time.Now()
+	statusCode := 0
+	defer c.observe("models", statusCode, time.Since(started))
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
 	if err != nil {
 		return err
@@ -147,11 +179,19 @@ func (c *Client) CheckModels(ctx context.Context) error {
 		return err
 	}
 	defer resp.Body.Close()
+	statusCode = resp.StatusCode
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return &Error{StatusCode: resp.StatusCode, Body: truncateBody(string(body))}
 	}
 	return nil
+}
+
+func (c *Client) observe(endpoint string, status int, duration time.Duration) {
+	if c.observer != nil {
+		c.observer(endpoint, status, duration)
+	}
 }
 
 func parseTranscript(data []byte) (string, error) {

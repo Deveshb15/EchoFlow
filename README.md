@@ -14,17 +14,41 @@ It is designed for single-user self-hosted use first and does not persist user d
 
 - `GET /healthz`
 - `GET /readyz`
+- `GET /metrics`
 - `POST /v1/transcriptions`
 - `POST /v1/post-process`
 - `POST /v1/pipeline/process`
 
-## Run
+Base URL (default): `http://localhost:8080`
+
+## Run (Local)
 
 ```bash
 cp .env.example .env
-export $(grep -v '^#' .env | xargs)
+# set UPSTREAM_API_KEY in .env
+set -a
+source .env
+set +a
+
 go run ./cmd/echoflow-api
 ```
+
+Or with Make:
+
+```bash
+make run
+```
+
+## Dev Commands
+
+```bash
+make fmt
+make test
+make vet
+make tidy
+```
+
+Responses no longer include debug prompt text (`prompt`/`post_processing_prompt`). Instead, post-processing responses include token usage metadata when the upstream provider returns `usage`.
 
 ## Example: Transcribe Audio
 
@@ -33,8 +57,6 @@ curl -X POST http://localhost:8080/v1/transcriptions \
   -F model=whisper-large-v3 \
   -F file=@sample.wav
 ```
-
-Responses no longer include debug prompt text (`prompt`/`post_processing_prompt`). Instead, post-processing responses include token usage metadata when the upstream provider returns `usage`.
 
 ## Example: Post-Process Transcript
 
@@ -55,4 +77,13 @@ curl -X POST http://localhost:8080/v1/pipeline/process \
   -F file=@sample.wav \
   -F context_summary='User is replying in email to Alice.' \
   -F custom_vocabulary='Alice, staging, prod'
+```
+
+## Docker
+
+```bash
+docker build -t echoflow .
+docker run --rm -p 8080:8080 \
+  -e UPSTREAM_API_KEY=your_groq_key \
+  echoflow
 ```
