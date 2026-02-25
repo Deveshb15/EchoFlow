@@ -18,8 +18,6 @@ type Config struct {
 	TranscriptionTimeout time.Duration
 	PostProcessTimeout   time.Duration
 	MaxUploadBytes       int64
-	EnableAuth           bool
-	APIBearerToken       string
 	LogLevel             string
 }
 
@@ -33,8 +31,6 @@ type envConfig struct {
 	TranscriptionTimeoutSeconds int    `env:"TRANSCRIPTION_TIMEOUT_SECONDS" envDefault:"20"`
 	PostProcessTimeoutSeconds   int    `env:"POSTPROCESS_TIMEOUT_SECONDS" envDefault:"20"`
 	MaxUploadBytes              int64  `env:"MAX_UPLOAD_BYTES" envDefault:"26214400"`
-	EnableAuth                  bool   `env:"ENABLE_AUTH" envDefault:"false"`
-	APIBearerToken              string `env:"API_BEARER_TOKEN"`
 	LogLevel                    string `env:"LOG_LEVEL" envDefault:"info"`
 }
 
@@ -54,8 +50,6 @@ func Load() (Config, error) {
 		TranscriptionTimeout: time.Duration(raw.TranscriptionTimeoutSeconds) * time.Second,
 		PostProcessTimeout:   time.Duration(raw.PostProcessTimeoutSeconds) * time.Second,
 		MaxUploadBytes:       raw.MaxUploadBytes,
-		EnableAuth:           raw.EnableAuth,
-		APIBearerToken:       strings.TrimSpace(raw.APIBearerToken),
 		LogLevel:             strings.ToLower(strings.TrimSpace(raw.LogLevel)),
 	}
 
@@ -71,9 +65,6 @@ func (c Config) Validate() error {
 	}
 	if c.UpstreamBaseURL == "" {
 		return errors.New("UPSTREAM_BASE_URL must not be empty")
-	}
-	if c.UpstreamAPIKey == "" {
-		return errors.New("UPSTREAM_API_KEY is required")
 	}
 	if c.TranscriptionModel == "" {
 		return errors.New("TRANSCRIPTION_MODEL must not be empty")
@@ -92,9 +83,6 @@ func (c Config) Validate() error {
 	}
 	if c.MaxUploadBytes <= 0 {
 		return errors.New("MAX_UPLOAD_BYTES must be > 0")
-	}
-	if c.EnableAuth && c.APIBearerToken == "" {
-		return errors.New("API_BEARER_TOKEN is required when ENABLE_AUTH=true")
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -22,6 +23,10 @@ type Client struct {
 	httpClient *http.Client
 	observer   ObserverFunc
 }
+
+var ErrMissingAPIKey = errors.New("missing upstream API key")
+
+type apiKeyContextKey struct{}
 
 type Error struct {
 	StatusCode int
@@ -77,6 +82,22 @@ func New(baseURL, apiKey string, httpClient *http.Client, opts ...Option) *Clien
 	return c
 }
 
+func WithRequestAPIKey(ctx context.Context, apiKey string) context.Context {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, apiKeyContextKey{}, apiKey)
+}
+
+func RequestAPIKeyFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(apiKeyContextKey{}).(string)
+	return strings.TrimSpace(value)
+}
+
 func (c *Client) Transcribe(ctx context.Context, file io.Reader, fileName, model string) (string, error) {
 	started := time.Now()
 	statusCode := 0
@@ -104,7 +125,9 @@ func (c *Client) Transcribe(ctx context.Context, file io.Reader, fileName, model
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if err := c.setAuthorizationHeader(ctx, req); err != nil {
+		return "", err
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := c.httpClient.Do(req)
@@ -141,7 +164,9 @@ func (c *Client) ChatCompletion(ctx context.Context, reqPayload ChatCompletionRe
 	if err != nil {
 		return ChatCompletionResponse{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if err := c.setAuthorizationHeader(ctx, req); err != nil {
+		return ChatCompletionResponse{}, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -172,7 +197,9 @@ func (c *Client) CheckModels(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if err := c.setAuthorizationHeader(ctx, req); err != nil {
+		return err
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -192,6 +219,18 @@ func (c *Client) observe(endpoint string, status int, duration time.Duration) {
 	if c.observer != nil {
 		c.observer(endpoint, status, duration)
 	}
+}
+
+func (c *Client) setAuthorizationHeader(ctx context.Context, req *http.Request) error {
+	apiKey := RequestAPIKeyFromContext(ctx)
+	if apiKey == "" {
+		apiKey = c.apiKey
+	}
+	if apiKey == "" {
+		return ErrMissingAPIKey
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	return nil
 }
 
 func parseTranscript(data []byte) (string, error) {

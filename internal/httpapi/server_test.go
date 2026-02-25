@@ -64,7 +64,6 @@ func newTestHandler(t *testing.T, deps Dependencies) http.Handler {
 	t.Helper()
 	cfg := config.Config{
 		MaxUploadBytes:  1024 * 1024,
-		EnableAuth:      false,
 		UpstreamAPIKey:  "x",
 		UpstreamBaseURL: "http://example.com",
 	}
@@ -215,5 +214,72 @@ func TestPipelineHandlerReturnsUsageAndNoPrompt(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), `"post_processing_prompt"`) {
 		t.Fatalf("post_processing_prompt should not be returned: %s", w.Body.String())
+	}
+}
+
+func TestBYOTRequiredWhenNoServerAPIKey(t *testing.T) {
+	h := NewServer(config.Config{
+		MaxUploadBytes:  1024 * 1024,
+		UpstreamBaseURL: "http://example.com",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), Dependencies{
+		Transcription: &stubTranscription{},
+		PostProcess:   &stubPostProcess{},
+		Pipeline:      &stubPipeline{},
+		Upstream:      stubUpstream{},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/post-process", strings.NewReader(`{"transcript":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Groq Cloud bearer token") {
+		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestBYOTAuthorizationHeaderAcceptedWhenNoServerAPIKey(t *testing.T) {
+	pp := &stubPostProcess{result: postprocess.Result{Transcript: "cleaned"}}
+	h := NewServer(config.Config{
+		MaxUploadBytes:  1024 * 1024,
+		UpstreamBaseURL: "http://example.com",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), Dependencies{
+		Transcription: &stubTranscription{},
+		PostProcess:   pp,
+		Pipeline:      &stubPipeline{},
+		Upstream:      stubUpstream{},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/post-process", strings.NewReader(`{"transcript":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer groq_test_token")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestReadyzSkipsUpstreamCheckWithoutAnyToken(t *testing.T) {
+	h := NewServer(config.Config{
+		MaxUploadBytes:  1024 * 1024,
+		UpstreamBaseURL: "http://example.com",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), Dependencies{
+		Transcription: &stubTranscription{},
+		PostProcess:   &stubPostProcess{},
+		Pipeline:      &stubPipeline{},
+		Upstream:      stubUpstream{err: io.EOF},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
 	}
 }

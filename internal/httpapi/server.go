@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -127,6 +126,11 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.UpstreamAPIKey == "" && openai.RequestAPIKeyFromContext(r.Context()) == "" {
+		writeJSON(w, http.StatusOK, model.ReadyResponse{OK: true, ServiceName: "EchoFlow"})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := s.upstream.CheckModels(ctx); err != nil {
@@ -369,25 +373,18 @@ func (s *server) recoverMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *server) authMiddleware(next http.Handler) http.Handler {
-	if !s.cfg.EnableAuth {
-		return next
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isPublicPath(r.URL.Path) {
-			next.ServeHTTP(w, r)
+		token, hasHeader, ok := extractBearerToken(r.Header.Get("Authorization"))
+		if hasHeader && !ok {
+			s.writeError(w, r, http.StatusUnauthorized, "unauthorized", "Authorization must be Bearer <groq_cloud_token>", nil)
 			return
 		}
-
-		const prefix = "Bearer "
-		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-		if !strings.HasPrefix(authHeader, prefix) {
-			s.writeError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token", nil)
+		if !isPublicPath(r.URL.Path) && token == "" && s.cfg.UpstreamAPIKey == "" {
+			s.writeError(w, r, http.StatusUnauthorized, "unauthorized", "missing Groq Cloud bearer token", nil)
 			return
 		}
-		token := strings.TrimSpace(strings.TrimPrefix(authHeader, prefix))
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.APIBearerToken)) != 1 {
-			s.writeError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token", nil)
-			return
+		if token != "" {
+			r = r.WithContext(openai.WithRequestAPIKey(r.Context(), token))
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -437,6 +434,23 @@ func cleanupMultipartForm(form *multipart.Form) {
 func requestIDFromContext(ctx context.Context) string {
 	value, _ := ctx.Value(requestIDContext).(string)
 	return value
+}
+
+func extractBearerToken(header string) (token string, hasHeader bool, ok bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return "", false, true
+	}
+	hasHeader = true
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", true, false
+	}
+	token = strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	if token == "" {
+		return "", true, false
+	}
+	return token, true, true
 }
 
 func newRequestID() string {

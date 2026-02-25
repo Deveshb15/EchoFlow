@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -99,5 +100,33 @@ func TestTranscribeReturnsUpstreamError(t *testing.T) {
 	}
 	if upErr.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("unexpected status code: %d", upErr.StatusCode)
+	}
+}
+
+func TestTranscribeUsesRequestScopedAPIKeyOverride(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer byot-key" {
+			t.Fatalf("unexpected auth header: %q", got)
+		}
+		_, _ = io.WriteString(w, `{"text":"hello"}`)
+	}))
+	defer ts.Close()
+
+	c := New(ts.URL, "server-key", ts.Client())
+	ctx := WithRequestAPIKey(context.Background(), "byot-key")
+	text, err := c.Transcribe(ctx, strings.NewReader("audio"), "sample.wav", "whisper-large-v3")
+	if err != nil {
+		t.Fatalf("Transcribe() error = %v", err)
+	}
+	if text != "hello" {
+		t.Fatalf("unexpected text: %q", text)
+	}
+}
+
+func TestTranscribeReturnsMissingAPIKeyError(t *testing.T) {
+	c := New("http://example.com", "", http.DefaultClient)
+	_, err := c.Transcribe(context.Background(), strings.NewReader("audio"), "sample.wav", "whisper-large-v3")
+	if !errors.Is(err, ErrMissingAPIKey) {
+		t.Fatalf("expected ErrMissingAPIKey, got %v", err)
 	}
 }
