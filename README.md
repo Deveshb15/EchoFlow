@@ -2,7 +2,7 @@
 
 Inspired by [zachlatta/freeflow](https://github.com/zachlatta/freeflow).
 
-EchoFlow is a small Go API that replicates the remote parts of the FreeFlow-style dictation pipeline:
+EchoFlow is a small Go API that replicates the remote parts of the [WisprFlow](https://wisprflow.ai/), [Monologue](http://monologue.to/), and [Superwhisper](https://superwhisper.com) style dictation pipeline:
 
 - audio transcription (OpenAI-compatible `/audio/transcriptions` upstream)
 - text post-processing (OpenAI-compatible `/chat/completions` upstream)
