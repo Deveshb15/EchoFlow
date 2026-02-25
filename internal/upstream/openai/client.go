@@ -134,7 +134,7 @@ func (c *Client) Transcribe(ctx context.Context, file io.Reader, fileName, model
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	statusCode = resp.StatusCode
 
 	respBody, err := io.ReadAll(resp.Body)
@@ -173,7 +173,7 @@ func (c *Client) ChatCompletion(ctx context.Context, reqPayload ChatCompletionRe
 	if err != nil {
 		return ChatCompletionResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	statusCode = resp.StatusCode
 
 	respBody, err := io.ReadAll(resp.Body)
@@ -205,7 +205,7 @@ func (c *Client) CheckModels(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	statusCode = resp.StatusCode
 
 	if resp.StatusCode != http.StatusOK {

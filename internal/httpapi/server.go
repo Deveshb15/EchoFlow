@@ -147,7 +147,7 @@ func (s *server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer cleanupMultipartForm(form)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	text, err := s.transcriber.Transcribe(r.Context(), file, header.Filename, strings.TrimSpace(r.FormValue("model")))
 	if err != nil {
@@ -160,7 +160,7 @@ func (s *server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handlePostProcess(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req model.PostProcessRequest
 	decoder := json.NewDecoder(r.Body)
@@ -205,7 +205,7 @@ func (s *server) handlePipelineProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer cleanupMultipartForm(form)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	includeDebug, err := parseOptionalBool(r.FormValue("include_debug"))
 	if err != nil {
@@ -441,7 +441,6 @@ func extractBearerToken(header string) (token string, hasHeader bool, ok bool) {
 	if header == "" {
 		return "", false, true
 	}
-	hasHeader = true
 	const prefix = "Bearer "
 	if !strings.HasPrefix(header, prefix) {
 		return "", true, false
