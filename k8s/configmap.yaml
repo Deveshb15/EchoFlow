@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: echoflow-config
+  namespace: echoflow
+data:
+  LISTEN_ADDR: ":8080"
+  UPSTREAM_BASE_URL: "https://api.groq.com/openai/v1"
+  TRANSCRIPTION_MODEL: "whisper-large-v3"
+  POSTPROCESS_MODEL: "meta-llama/llama-4-scout-17b-16e-instruct"
+  REQUEST_TIMEOUT_SECONDS: "25"
+  TRANSCRIPTION_TIMEOUT_SECONDS: "20"
+  POSTPROCESS_TIMEOUT_SECONDS: "20"
+  MAX_UPLOAD_BYTES: "26214400"
+  LOG_LEVEL: "info"

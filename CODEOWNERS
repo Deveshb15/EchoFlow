@@ -1,0 +1,2 @@
+# Protect CI/CD workflows — require maintainer approval for changes
+.github/workflows/ @Deveshb15

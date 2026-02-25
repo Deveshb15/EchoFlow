@@ -1,0 +1,61 @@
+---
+# Default deny-all: block all ingress and egress for all pods in namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: echoflow
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow ingress only from nginx ingress controller on port 8080
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-nginx
+  namespace: echoflow
+spec:
+  podSelector:
+    matchLabels:
+      app: echoflow
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# Allow egress to HTTPS (Groq API) and DNS only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-https-dns
+  namespace: echoflow
+spec:
+  podSelector:
+    matchLabels:
+      app: echoflow
+  policyTypes:
+    - Egress
+  egress:
+    # DNS (TCP + UDP)
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS (Groq API)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443

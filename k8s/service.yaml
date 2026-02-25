@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: echoflow
+  namespace: echoflow
+  labels:
+    app: echoflow
+spec:
+  type: ClusterIP
+  selector:
+    app: echoflow
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
